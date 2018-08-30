@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:GridItemRenderer xmlns:fx="http://ns.adobe.com/mxml/2009" 
+					xmlns:s="library://ns.adobe.com/flex/spark" 
+					xmlns:mx="library://ns.adobe.com/flex/mx"
+					clipAndEnableScrolling="true">
+	
+	<fx:Script>
+		<![CDATA[
+			import events.SavedVideoGridEvent;
+			
+			import mx.controls.Alert;
+			import mx.events.FlexEvent;
+			
+			import spark.primitives.Rect;
+			override public function prepare(hasBeenRecycled:Boolean):void
+			{
+				this.height = 26;
+				//this.width = 130;
+				if(data != null)
+				{
+					lblData.text = data[column.dataField];
+				}
+				
+				if(this.rowIndex % 2 == 0)
+				{
+					background.visible = true;
+					background.height = this.height;
+					background.width = this.width;
+					background.alpha = 0.05;
+					colore.color = 0x000033;
+				}
+			}
+		]]>
+	</fx:Script>
+	
+	<s:Label id="lblData"
+			 top="9" left="7"/>
+	
+	<s:Rect id="background" visible="false">
+		<s:fill>
+			<s:SolidColor id="colore"/>
+		</s:fill>
+	</s:Rect>
+</s:GridItemRenderer>

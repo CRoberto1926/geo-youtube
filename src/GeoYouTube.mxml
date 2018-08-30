@@ -1,0 +1,851 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:WindowedApplication xmlns:fx="http://ns.adobe.com/mxml/2009"
+					   xmlns:s="library://ns.adobe.com/flex/spark"
+					   xmlns:mx="library://ns.adobe.com/flex/mx"
+					   width="800" height="600"
+					   showStatusBar="false"
+					   frameRate="60"
+					   initialize="windowedapplication1_initializeHandler(event)">
+	<fx:Script>
+		<![CDATA[
+			import com.google.maps.MapEvent;
+			import com.google.maps.MapType;
+			
+			import components.AS3Player;
+			import components.GeoTagInsert;
+			import components.GeoTagMap;
+			import components.SavedVideoGrid;
+			import components.YoutubeSearch;
+			import components.YoutubeVideoGrid;
+			
+			import events.AS3PlayerEvent;
+			import events.GeoTagMapEvent;
+			import events.InfoWindowOptionsCustomContentEvent;
+			import events.SavedVideoGridEvent;
+			import events.YoutubeSearchEvent;
+			
+			import flash.utils.getQualifiedClassName;
+			
+			import handlers.DBHandler;
+			
+			import mx.collections.ArrayList;
+			import mx.controls.Alert;
+			import mx.events.FlexEvent;
+			
+			import renderers.SavedVideoGridRenderer;
+			
+			import spark.components.TabBar;
+			import spark.events.GridSelectionEvent;
+			import spark.events.IndexChangeEvent;
+			
+			private const STAGE_WIDTH:int = 800;
+			private const STAGE_HEIGHT:int = 600;
+			private const YOUTUBESEARCH_X:int = 0;
+			private const YOUTUBESEARCH_Y:int = 0;
+			private const TABBAR_HEIGHT:int = 20;
+			private const GEOTAGINSERT_WIDTH_OFFSET:int = 2;
+			private const GEOTAGINSERT_HEIGHT_OFFSET:int = 33;
+			
+			private var firstSearch:Boolean;
+			private var firstLoad:Boolean;
+			private var startTime:Number;
+			
+			private var youtubeSearch:YoutubeSearch;
+			private var youtubeVideoGrid:YoutubeVideoGrid;
+			private var youtubeVideoPlayer:AS3Player;
+			private var geoTagMap:GeoTagMap;
+			private var geoTagInsert:GeoTagInsert;
+			private var mapBar:TabBar;
+			private var videoBar:TabBar;
+			private var savedVideoGrid:SavedVideoGrid;
+			
+			private function windowedapplication1_initializeHandler(event:FlexEvent):void
+			{				
+				var query1:String = "CREATE TABLE IF NOT EXISTS SavedVideos (" +
+					"id VARCHAR NOT NULL PRIMARY KEY," +
+					"title VARCHAR NOT NULL," +
+					"description VARCHAR NOT NULL" +
+					")";
+				
+				var query2:String = "CREATE TABLE IF NOT EXISTS GeoTag (" +
+					"Id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT," +
+					"lat REAL NOT NULL," +
+					"lng REAL NOT NULL," +
+					"name VARCHAR NOT NULL," +
+					"fcl VARCHAR NOT NULL," +
+					"geonameId INT(7) NOT NULL," +
+					"countryName VARCHAR NOT NULL," +
+					"title VARCHAR," +
+					"summary VARCHAR," +
+					"wikipediaUrl VARCHAR," +
+					"VideoId VARCHAR NOT NULL REFERENCES SavedVideos(id) ON DELETE CASCADE," +
+					"StartTime REAL NOT NULL," +
+					"EndTime REAL NOT NULL," +
+					"UNIQUE(lat, lng, VideoId, StartTime))";
+				
+				var dbHandler:DBHandler = new DBHandler("geotag.db");
+				
+				if(!dbHandler.dbFileExists()){
+					dbHandler.executeQuery(query1);
+					dbHandler.executeQuery(query2);
+				}
+				
+				firstSearch = true;
+				firstLoad = true;
+				
+				youtubeSearch = new YoutubeSearch();
+				youtubeSearch.x = STAGE_WIDTH/2 - youtubeSearch.width/2;
+				youtubeSearch.y = STAGE_HEIGHT/2 - youtubeSearch.height/2;
+				
+				addEventListener(YoutubeSearchEvent.VIDEOS_FOUND, videosFoundHandler);
+				addEventListener(YoutubeSearchEvent.VIDEOS_NOT_FOUND, videosNotFoundHandler);
+				addEventListener(AS3PlayerEvent.PLAYER_READY, playerReadyHandler);
+				addEventListener(InfoWindowOptionsCustomContentEvent.GEOTAG_START, geoTagStartHandler);
+				addEventListener(InfoWindowOptionsCustomContentEvent.GEOTAG_END, geoTagEndHandler);
+				addEventListener(InfoWindowOptionsCustomContentEvent.GEOTAG_INSERT, geoTagInsertHandler);
+				addEventListener(InfoWindowOptionsCustomContentEvent.GEOTAG_SAVEEDIT, geoTagSaveEditHandler);
+				addEventListener(AS3PlayerEvent.CUEPOINT_START_REACHED, cuePointStartReachedHandler);
+				addEventListener(AS3PlayerEvent.CUEPOINT_END_REACHED, cuePointEndReachedHandler);
+				
+				addElement(youtubeSearch);
+				
+				youtubeVideoPlayer = new AS3Player('yfyiuYKRQWQ');
+				youtubeVideoPlayer.x = youtubeSearch.width;
+				
+				youtubeVideoPlayer.visible = false;
+				youtubeVideoPlayer.enabled = false;
+				
+				addElement(youtubeVideoPlayer);
+				
+				savedVideoGrid = new SavedVideoGrid();
+				var query:String = "SELECT * FROM SavedVideos";
+				var dpSource:Array = dbHandler.executeQuery(query).data;
+				savedVideoGrid.y = TABBAR_HEIGHT;
+				savedVideoGrid.height = 284;
+				savedVideoGrid.width = youtubeSearch.width;
+				
+				youtubeVideoGrid = new YoutubeVideoGrid();
+				youtubeVideoGrid.y = youtubeSearch.height + TABBAR_HEIGHT;
+				youtubeVideoGrid.width = youtubeSearch.width;
+				youtubeVideoGrid.height = 259; //239
+				
+				youtubeVideoGrid.addEventListener(GridSelectionEvent.SELECTION_CHANGE, selectionChangeHandler);
+				youtubeVideoGrid.addEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+				
+				youtubeVideoGrid.enabled = false;
+				youtubeVideoGrid.visible = false;
+				
+				addElement(youtubeVideoGrid);
+				
+				videoBar = new TabBar();
+				videoBar.labelField = "titl";
+				
+				videoBar.width = youtubeSearch.width;
+				videoBar.height = TABBAR_HEIGHT;
+				
+				var dp:ArrayList = new ArrayList();
+				var obj1:Object = new Object();
+				obj1.titl = "Search";
+				obj1.elem = youtubeVideoGrid;
+				dp.addItem(obj1);
+				var obj2:Object = new Object();
+				obj2.titl = "Tagged";
+				obj2.elem = savedVideoGrid;
+				dp.addItem(obj2);
+				
+				videoBar.dataProvider = dp;
+				
+				videoBar.addEventListener(IndexChangeEvent.CHANGE, indexVideoBarChangeHandler);
+				
+				if(dpSource)
+				{
+					var i:int = 0;
+					for(i=0;i<dpSource.length;i++)
+					{
+						dpSource[i].id = unescape(dpSource[i].id);
+						dpSource[i].title = unescape(dpSource[i].title);
+						dpSource[i].description = unescape(dpSource[i].description);
+					}
+					savedVideoGrid.dataProvider = new ArrayList(dpSource);
+					//videoBar.enabled = true;
+				}
+				else
+				{
+					savedVideoGrid.dataProvider = null;
+					//videoBar.enabled = false;
+				}
+				
+				videoBar.enabled = false;
+				videoBar.visible = false;
+				
+				addElement(videoBar)
+				
+				savedVideoGrid.addEventListener(GridSelectionEvent.SELECTION_CHANGE, selectionChangeHandler);
+				
+				savedVideoGrid.enabled = false;
+				savedVideoGrid.visible = false;
+				
+				addElement(savedVideoGrid);
+				
+				geoTagMap = new GeoTagMap(youtubeVideoPlayer);
+				
+				addEventListener(GeoTagMapEvent.GEOTAGMAP_READY, mapReadyHandler);
+				
+				geoTagMap.enabled = false;
+				geoTagMap.visible = false;
+				
+				mapBar = new TabBar();
+				mapBar.labelField = "titl";
+				
+				mapBar.width = STAGE_WIDTH;
+				mapBar.height = TABBAR_HEIGHT;
+				
+				dp = new ArrayList();
+				obj1 = new Object();
+				obj1.titl = "Tags";
+				obj1.titl2 = "Tags";
+				obj1.titl3 = "Tags";
+				obj1.elem = geoTagMap;
+				dp.addItem(obj1);
+				obj2 = new Object();
+				obj2.titl = "Insert";
+				obj2.titl2 = "Insert";
+				obj2.titl3 = "Edit";
+				geoTagInsert = new GeoTagInsert(STAGE_WIDTH + GEOTAGINSERT_WIDTH_OFFSET, STAGE_HEIGHT - (videoBar.height+youtubeSearch.height+youtubeVideoGrid.height) - mapBar.height + GEOTAGINSERT_HEIGHT_OFFSET, youtubeVideoPlayer)
+				obj2.elem = geoTagInsert;
+				dp.addItem(obj2);
+				
+				mapBar.dataProvider = dp;
+				
+				mapBar.addEventListener(IndexChangeEvent.CHANGE, indexMapBarChangeHandler);
+				mapBar.addEventListener(FlexEvent.VALUE_COMMIT, mapBarValueCommitHandler);
+				
+				addEventListener(InfoWindowOptionsCustomContentEvent.EDIT_GEOTAG, editGeoTagHandler);
+				addEventListener(InfoWindowOptionsCustomContentEvent.DELETE_GEOTAG_FROM_EDIT, deleteGeoTagFromEditHandler);
+				addEventListener(InfoWindowOptionsCustomContentEvent.DELETE_GEOTAG_FROM_SAVED, deleteGeoTagFromSavedHandler);
+				
+				mapBar.enabled = false;
+				mapBar.visible = false;
+				
+				addElement(mapBar);
+				
+				geoTagInsert.visible = false;
+				geoTagInsert.enabled = false;
+				
+				addElement(geoTagInsert);
+				
+				addEventListener(SavedVideoGridEvent.DELETE_ALL_TAGS, deleteAllTagsHandler);
+				addEventListener(GeoTagMapEvent.ON_MAP_TYPE_CHANGE, onMapTypeChangeHandler);
+			}
+			
+			private function onMapTypeChangeHandler(gtme:GeoTagMapEvent):void
+			{
+				//Alert.show("culo");
+				if(getQualifiedClassName(gtme.target) == "components::GeoTagMap")
+					geoTagInsert.setMapType(gtme.iMapType);
+				else if(getQualifiedClassName(gtme.target) == "components::GeoTagInsert")
+					geoTagMap.setMapType(gtme.iMapType);
+			}
+			
+			private function deleteAllTagsHandler(svge:SavedVideoGridEvent):void
+			{
+				var query:String = "SELECT Id FROM GeoTag WHERE VideoId = '" + escape(svge.id) + "'";				
+				var dbHandler:DBHandler = new DBHandler('geotag.db');
+				var ids:Array = dbHandler.executeQuery(query).data;
+				query = "DELETE FROM GeoTag WHERE VideoId = '" + escape(svge.id) + "'";
+				dbHandler.executeQuery(query);
+				var i:int = 0;
+				for(i=0;i<ids.length;i++)
+				{
+					youtubeVideoPlayer.removeGeoTagTime(ids[i].Id);
+					geoTagMap.removeMarkerById(ids[i].Id);
+				}
+				
+				//geoTagMap.removeEditingMarker();
+				
+				//if(geoTagMap.tagNumber() == 0) //Non so se serve perché c'è ON DELETE CASCADE
+				//{
+				query = "DELETE FROM SavedVideos WHERE id = '" + escape(youtubeVideoPlayer.videoId) + "'";
+				dbHandler.executeQuery(query);
+				query = "SELECT * FROM SavedVideos";
+				
+				var dpSource:Array = dbHandler.executeQuery(query).data;
+				if(dpSource)
+				{
+					//var i:int = 0;
+					for(i=0;i<dpSource.length;i++)
+					{
+						dpSource[i].id = unescape(dpSource[i].id);
+						dpSource[i].title = unescape(dpSource[i].title);
+						dpSource[i].description = unescape(dpSource[i].description);
+					}
+					savedVideoGrid.dataProvider = new ArrayList(dpSource);
+					videoBar.enabled = true;
+				}
+				else
+				{
+					videoBar.enabled = false;
+					savedVideoGrid.dataProvider = null;
+					videoBar.selectedIndex = 0;
+					savedVideoGrid.enabled = false;
+					savedVideoGrid.visible = false;
+					youtubeSearch.enabled = true;
+					youtubeVideoGrid.enabled = true;
+					youtubeSearch.visible = true;
+					youtubeVideoGrid.visible = true;
+				}
+				//}
+				if(savedVideoGrid.dataProviderLength > svge.rowIndex)
+					savedVideoGrid.selectedIndex = svge.rowIndex;
+				else if(savedVideoGrid.dataProviderLength == svge.rowIndex)
+					savedVideoGrid.selectedIndex = svge.rowIndex - 1;
+				
+				geoTagMap.clean();
+				youtubeVideoPlayer.clearGeoTagTimes();
+				
+				if(savedVideoGrid.dataProviderLength > 0)
+				{
+				youtubeVideoPlayer.videoId = savedVideoGrid.selectedItem.id;
+				
+				//var dbHandler:DBHandler = new DBHandler('geotag.db');
+				
+				query = "SELECT * FROM GeoTag WHERE VideoId = '" + youtubeVideoPlayer.videoId + "' ORDER BY StartTime ASC";
+				var results:Array = dbHandler.executeQuery(query).data;
+				
+				for each(var result:Object in results)
+				{
+					result.name = unescape(result.name);
+					result.fcl = unescape(result.fcl);
+					result.countryName = unescape(result.countryName);
+					result.title = unescape(result.title);
+					result.summary = unescape(result.summary);
+					result.wikipediaUrl = unescape(result.wikipediaUrl);
+					result.VideoId = unescape(result.VideoId);
+					
+					youtubeVideoPlayer.addGeoTagTime(result.StartTime, result.EndTime, result.Id);
+					
+					geoTagMap.addMarker(result);
+				}
+				mapBar.selectedIndex = 0;
+				
+				//var i:int = 0;
+				for(i=0;i<youtubeVideoGrid.dataProvider.length;i++)
+				{
+					if(youtubeVideoGrid.dataProvider.toArray()[i].id == savedVideoGrid.selectedItem.id)
+					{
+						youtubeVideoGrid.removeEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+						youtubeVideoGrid.selectedIndex = i;
+						youtubeVideoGrid.addEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+						return;
+					}
+				}
+				youtubeVideoGrid.removeEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+				youtubeVideoGrid.selectedItem = null;
+				youtubeVideoGrid.addEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+				
+				}
+				else
+				{
+					youtubeVideoGrid.selectedIndex = 0;
+				}
+				
+				//geoTagMap.markerRemoveHandler(iwocce.geoTagMarker);
+				//mapBar.selectedIndex = 0;
+			}
+			
+			private function cuePointStartReachedHandler(e:AS3PlayerEvent):void
+			{
+				geoTagMap.addFocusMarker(e.id);
+			}
+			
+			private function cuePointEndReachedHandler(e:AS3PlayerEvent):void
+			{
+				geoTagMap.removeFocusMarker(e.id);
+			}
+			
+			private function geoTagSaveEditHandler(iwocce:InfoWindowOptionsCustomContentEvent):void
+			{
+				var query:String = "UPDATE GeoTag " +
+					"SET lat = " + iwocce.dataGeoTag.lat + "," +
+					"lng = " + iwocce.dataGeoTag.lng + "," +
+					"name = '" + escape(iwocce.dataGeoTag.name) + "'," +
+					"fcl = '" + escape(iwocce.dataGeoTag.fcl) + "'," +
+					"geonameId = " + iwocce.dataGeoTag.geonameId + "," +
+					"countryName = '" + escape(iwocce.dataGeoTag.countryName) + "'," +
+					"title = '" + escape(iwocce.dataGeoTag.title) + "'," +
+					"summary = '" + escape(iwocce.dataGeoTag.summary) + "'," +
+					"wikipediaUrl = '" + escape(iwocce.dataGeoTag.wikipediaUrl) + "' " +
+					"WHERE Id = " + iwocce.dataGeoTag.Id;
+				
+				var dbHandler:DBHandler = new DBHandler('geotag.db');
+				dbHandler.executeQuery(query);
+				
+				var dataOldGeoTag:Object = geoTagMap.removeEditingMarker();
+				var dataNewGeoTag:Object = iwocce.dataGeoTag;
+				dataNewGeoTag.StartTime = dataOldGeoTag.StartTime;
+				dataNewGeoTag.EndTime = dataOldGeoTag.EndTime;
+				
+				geoTagMap.addMarker(dataNewGeoTag);
+				
+				geoTagInsert.isEditing = false;
+				geoTagInsert.isCreating = false;
+				
+				mapBar.selectedIndex = 0;
+				mapBar.labelField = "titl";
+				//youtubeVideoPlayer.enabled = true;
+			}
+			
+			private function editGeoTagHandler(iwocce:InfoWindowOptionsCustomContentEvent):void
+			{
+				mapBar.labelField = "titl3";
+				mapBar.selectedIndex = 1;
+				geoTagInsert.isEditing = true;
+				geoTagInsert.isCreating = false;
+				geoTagInsert.editMarker(iwocce.dataGeoTag);
+				geoTagMap.editingMarker = iwocce.geoTagMarker;
+				//youtubeVideoPlayer.enabled = false;
+			}
+			
+			private function deleteGeoTagFromSavedHandler(iwocce:InfoWindowOptionsCustomContentEvent):void
+			{
+				var query:String = "DELETE FROM GeoTag WHERE Id = " + iwocce.dataGeoTag.Id;
+				var dbHandler:DBHandler = new DBHandler('geotag.db');
+				dbHandler.executeQuery(query);
+				youtubeVideoPlayer.removeGeoTagTime(iwocce.dataGeoTag.Id);
+				//geoTagMap.removeEditingMarker();
+				
+				if(geoTagMap.tagNumber() == 0)
+				{
+					query = "DELETE FROM SavedVideos WHERE id = '" + escape(youtubeVideoPlayer.videoId) + "'";
+					dbHandler.executeQuery(query);
+					query = "SELECT * FROM SavedVideos";
+					
+					var dpSource:Array = dbHandler.executeQuery(query).data;
+					if(dpSource)
+					{
+						var i:int = 0;
+						for(i=0;i<dpSource.length;i++)
+						{
+							dpSource[i].id = unescape(dpSource[i].id);
+							dpSource[i].title = unescape(dpSource[i].title);
+							dpSource[i].description = unescape(dpSource[i].description);
+						}
+						savedVideoGrid.dataProvider = new ArrayList(dpSource);
+						videoBar.enabled = true;
+					}
+					else
+					{
+						videoBar.enabled = false;
+						savedVideoGrid.dataProvider = null;
+						videoBar.selectedIndex = 0;
+						savedVideoGrid.enabled = false;
+						savedVideoGrid.visible = false;
+						youtubeSearch.enabled = true;
+						youtubeVideoGrid.enabled = true;
+						youtubeSearch.visible = true;
+						youtubeVideoGrid.visible = true;
+					}
+				}
+				geoTagMap.markerRemoveHandler(iwocce.geoTagMarker);
+				mapBar.selectedIndex = 0;
+			}
+			
+			private function deleteGeoTagFromEditHandler(iwocce:InfoWindowOptionsCustomContentEvent):void
+			{
+				var query:String = "DELETE FROM GeoTag WHERE Id = " + iwocce.dataGeoTag.Id;
+				var dbHandler:DBHandler = new DBHandler('geotag.db');
+				dbHandler.executeQuery(query);
+				youtubeVideoPlayer.removeGeoTagTime(iwocce.dataGeoTag.Id);
+				geoTagMap.removeEditingMarker();
+				
+				if(geoTagMap.tagNumber() == 0)
+				{
+					query = "DELETE FROM SavedVideos WHERE id = '" + escape(youtubeVideoPlayer.videoId) + "'";
+					dbHandler.executeQuery(query);
+					query = "SELECT * FROM SavedVideos";
+					
+					var dpSource:Array = dbHandler.executeQuery(query).data;
+					if(dpSource)
+					{
+						var i:int = 0;
+						for(i=0;i<dpSource.length;i++)
+						{
+							dpSource[i].id = unescape(dpSource[i].id);
+							dpSource[i].title = unescape(dpSource[i].title);
+							dpSource[i].description = unescape(dpSource[i].description);
+						}
+						savedVideoGrid.dataProvider = new ArrayList(dpSource);
+						videoBar.enabled = true;
+					}
+					else
+					{
+						videoBar.enabled = false;
+						savedVideoGrid.dataProvider = null;
+						videoBar.selectedIndex = 0;
+						savedVideoGrid.enabled = false;
+						savedVideoGrid.visible = false;
+						youtubeSearch.enabled = true;
+						youtubeVideoGrid.enabled = true;
+						youtubeSearch.visible = true;
+						youtubeVideoGrid.visible = true;
+					}
+				}
+				geoTagMap.markerRemoveHandler(iwocce.geoTagMarker);
+				mapBar.selectedIndex = 0;
+			}
+			
+			private function indexMapBarChangeHandler(ice:IndexChangeEvent):void
+			{
+				if(ice.newIndex == 1)
+				{
+					mapBar.labelField = "titl2";
+					youtubeVideoPlayer.pauseVideo();
+					//youtubeVideoPlayer.enabled = false;
+					geoTagInsert.isCreating = true;
+					geoTagInsert.isEditing = false;
+					geoTagInsert.clean();
+				}
+				else if(ice.newIndex == 0)
+				{
+					mapBar.labelField = "titl";
+					//youtubeVideoPlayer.playVideo();
+					geoTagInsert.isCreating = false;
+					geoTagInsert.isEditing = false;
+				}
+			}
+			
+			private function mapBarValueCommitHandler(fe:FlexEvent):void
+			{
+				fe.target.dataProvider.getItemAt(fe.target.selectedIndex).elem.enabled = true;
+				fe.target.dataProvider.getItemAt(fe.target.selectedIndex).elem.visible = true;
+				
+				fe.target.dataProvider.getItemAt((fe.target.selectedIndex + 1) % 2).elem.enabled = false;
+				fe.target.dataProvider.getItemAt((fe.target.selectedIndex + 1) % 2).elem.visible = false;
+				
+				if(fe.target.selectedIndex == 1)
+				{
+					youtubeVideoPlayer.pauseVideo();
+				}
+				else if(fe.target.selectedIndex == 0)
+				{
+					//youtubeVideoPlayer.enabled = true;
+					//youtubeVideoPlayer.playVideo();
+					mapBar.labelField = "titl";
+					geoTagInsert.clean();
+				}
+			}
+			
+			private function geoTagStartHandler(iwocce:InfoWindowOptionsCustomContentEvent):void
+			{
+				//startTime = youtubeVideoPlayer.getCurrentTime();
+				youtubeVideoPlayer.playVideo();
+			}
+			
+			private function geoTagEndHandler(iwocce:InfoWindowOptionsCustomContentEvent):void
+			{
+				youtubeVideoPlayer.pauseVideo();
+			}
+			
+			private function geoTagInsertHandler(iwocce:InfoWindowOptionsCustomContentEvent):void
+			{
+				var dbHandler:DBHandler = new DBHandler('geotag.db');
+				
+				var query:String = "INSERT INTO GeoTag (" +
+					"lat, lng, name, fcl, geonameId, countryName, title, summary, wikipediaUrl, VideoId, StartTime, EndTime) " +
+					"VALUES(" + iwocce.dataGeoTag.lat+ ", " +
+					"" + iwocce.dataGeoTag.lng + ", " +
+					"'" + escape(iwocce.dataGeoTag.name) + "', " +
+					"'" + escape(iwocce.dataGeoTag.fcl) + "', " +
+					"" + iwocce.dataGeoTag.geonameId + ", " +
+					"'" + escape(iwocce.dataGeoTag.countryName) + "', " +
+					"'" + escape(iwocce.dataGeoTag.title) + "', " +
+					"'" + escape(iwocce.dataGeoTag.summary) + "', " +
+					"'" + escape(iwocce.dataGeoTag.wikipediaUrl) + "', " +
+					"'" + escape(youtubeVideoPlayer.videoId) + "', " +
+					"" + iwocce.dataGeoTag.StartTime + ", " +
+					"" + iwocce.dataGeoTag.EndTime + ")";					
+				
+				dbHandler.executeQuery(query);
+				
+				if(videoBar.selectedIndex == 0)
+				{
+					query = "INSERT OR REPLACE INTO SavedVideos (" +
+						"id, title, description) " +
+						"VALUES('" + escape(youtubeVideoGrid.selectedItem.id) + "', " +
+						"'" + escape(youtubeVideoGrid.selectedItem.title.value) + "', " +
+						"'" + escape(youtubeVideoGrid.selectedItem.description) + "')";
+				}
+				else if(videoBar.selectedIndex == 1)
+				{
+					query = "INSERT OR REPLACE INTO SavedVideos (" +
+						"id, title, description) " +
+						"VALUES('" + escape(savedVideoGrid.selectedItem.id) + "', " +
+						"'" + escape(savedVideoGrid.selectedItem.title) + "', " +
+						"'" + escape(savedVideoGrid.selectedItem.description) + "')";
+				}
+				
+				dbHandler.executeQuery(query);
+				
+				query = "SELECT Id FROM GeoTag WHERE " +
+					"lat = " + iwocce.dataGeoTag.lat + " AND " +
+					"lng = " + iwocce.dataGeoTag.lng + " AND " +
+					"VideoId = '" + escape(youtubeVideoPlayer.videoId) + "' AND " +
+					"StartTime = " + iwocce.dataGeoTag.StartTime;
+				
+				var dataGeoTag:Object = iwocce.dataGeoTag;
+				dataGeoTag.Id = dbHandler.executeQuery(query).data[0].Id;
+				
+				
+				youtubeVideoPlayer.addGeoTagTime(iwocce.dataGeoTag.StartTime, iwocce.dataGeoTag.EndTime, dataGeoTag.Id);
+				
+				geoTagMap.addMarker(iwocce.dataGeoTag);
+				geoTagInsert.isEditing = false;
+				geoTagInsert.isCreating = false;
+				
+				if(videoBar.selectedIndex == 0)
+				{
+					query = "SELECT * FROM SavedVideos";
+					
+					var dpSource:Array = dbHandler.executeQuery(query).data;
+					if(dpSource)
+					{
+						var i:int = 0;
+						for(i=0;i<dpSource.length;i++)
+						{
+							dpSource[i].id = unescape(dpSource[i].id);
+							dpSource[i].title = unescape(dpSource[i].title);
+							dpSource[i].description = unescape(dpSource[i].description);
+						}
+						savedVideoGrid.dataProvider = new ArrayList(dpSource);
+						for(i=0;i<savedVideoGrid.dataProvider.length;i++)
+						{
+							if(savedVideoGrid.dataProvider.toArray()[i].id == youtubeVideoPlayer.videoId)
+							{
+								savedVideoGrid.selectedIndex = i;
+								break;
+							}
+						}
+						videoBar.enabled = true;
+					}
+					else
+					{
+						videoBar.enabled = false;
+						savedVideoGrid.dataProvider = null;
+					}
+				}
+				mapBar.selectedIndex = 0;
+			}
+			
+			private function playerReadyHandler(ape:AS3PlayerEvent):void
+			{
+				youtubeVideoPlayer.width = STAGE_WIDTH - youtubeSearch.width;
+				youtubeVideoPlayer.height = Math.round(youtubeVideoPlayer.width*9/16);			
+				
+				mapBar.y = youtubeVideoPlayer.height;				
+				
+				geoTagMap.y = youtubeVideoPlayer.height + mapBar.height;
+			}
+			
+			private function mapReadyHandler(gtme:GeoTagMapEvent):void
+			{
+				geoTagMap.width = STAGE_WIDTH;
+				geoTagMap.height = STAGE_HEIGHT - youtubeVideoPlayer.height - mapBar.height;
+				geoTagInsert.x = geoTagMap.x;
+				geoTagInsert.y = geoTagMap.y;				
+			}
+			
+			private function videosFoundHandler(yse:YoutubeSearchEvent):void
+			{
+				if(firstSearch)
+				{
+					firstSearch = false;
+					
+					youtubeSearch.x = YOUTUBESEARCH_X;
+					youtubeSearch.y = TABBAR_HEIGHT;
+					
+					youtubeVideoGrid.enabled = true;
+					youtubeVideoGrid.visible = true;
+					
+					if(savedVideoGrid.dataProvider)
+						videoBar.enabled = true;
+					else
+						videoBar.enabled = false;
+					
+					videoBar.visible = true;
+					
+					mapBar.visible = true;
+					mapBar.enabled = true;
+					
+					addElement(geoTagMap);
+					
+					addEventListener(YoutubeSearchEvent.SEARCH_BEGINNING, searchBeginningHandler);
+				}
+				youtubeVideoGrid.updateSearchParameters(yse.searchResponse, yse.searchString);
+				youtubeVideoGrid.enabled = true;
+			}
+			
+			private function searchBeginningHandler(yse:YoutubeSearchEvent):void
+			{
+				youtubeVideoGrid.enabled = false;
+			}
+			
+			private function indexVideoBarChangeHandler(ice:IndexChangeEvent):void
+			{
+				ice.target.dataProvider.getItemAt(ice.newIndex).elem.enabled = true;
+				ice.target.dataProvider.getItemAt(ice.newIndex).elem.visible = true;
+				
+				ice.target.dataProvider.getItemAt(ice.oldIndex).elem.enabled = false;
+				ice.target.dataProvider.getItemAt(ice.oldIndex).elem.visible = false;
+				
+				if(ice.newIndex == 1)
+				{
+					youtubeSearch.enabled = false;
+					youtubeSearch.visible = false;
+				}
+				else if(ice.newIndex == 0)
+				{
+					youtubeSearch.enabled = true;
+					youtubeSearch.visible = true;
+				}
+			}
+			
+			private function selectionChangeHandler(gse:GridSelectionEvent):void
+			{				
+				youtubeVideoPlayer.videoId = gse.target.dataProvider.source[gse.selectionChange.rowIndex].id;
+				geoTagMap.clean();
+				youtubeVideoPlayer.clearGeoTagTimes();
+				
+				var dbHandler:DBHandler = new DBHandler('geotag.db');
+				
+				var query:String = "SELECT * FROM GeoTag WHERE VideoId = '" + youtubeVideoPlayer.videoId + "' ORDER BY StartTime ASC";
+				var results:Array = dbHandler.executeQuery(query).data;
+				
+				for each(var result:Object in results)
+				{
+					result.name = unescape(result.name);
+					result.fcl = unescape(result.fcl);
+					result.countryName = unescape(result.countryName);
+					result.title = unescape(result.title);
+					result.summary = unescape(result.summary);
+					result.wikipediaUrl = unescape(result.wikipediaUrl);
+					result.VideoId = unescape(result.VideoId);
+					
+					youtubeVideoPlayer.addGeoTagTime(result.StartTime, result.EndTime, result.Id);
+					
+					geoTagMap.addMarker(result);
+				}
+				mapBar.selectedIndex = 0;
+				
+				var i:int = 0;
+				if(savedVideoGrid.dataProvider)
+				{
+					if(getQualifiedClassName(gse.target) == "components::SavedVideoGrid")
+					{
+						for(i=0;i<youtubeVideoGrid.dataProvider.length;i++)
+						{
+							if(youtubeVideoGrid.dataProvider.toArray()[i].id == gse.target.selectedItem.id)
+							{
+								youtubeVideoGrid.removeEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+								youtubeVideoGrid.selectedIndex = i;
+								youtubeVideoGrid.addEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+								return;
+							}
+						}
+						youtubeVideoGrid.removeEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+						youtubeVideoGrid.selectedItem = null;
+						youtubeVideoGrid.addEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+					}
+					else if(getQualifiedClassName(gse.target) == "components::YoutubeVideoGrid")
+					{
+						for(i=0;i<savedVideoGrid.dataProvider.length;i++)
+						{
+							if(savedVideoGrid.dataProvider.toArray()[i].id == gse.target.selectedItem.id)
+							{
+								savedVideoGrid.selectedIndex = i;
+								return;
+							}
+						}
+						savedVideoGrid.selectedItem = null;
+					}
+				}
+			}
+			
+			private function valueCommitHandler(fe:FlexEvent):void
+			{
+				if(firstLoad)
+				{
+					firstLoad = false;
+					youtubeVideoPlayer.enabled = true;
+					youtubeVideoPlayer.visible = true;
+				}
+				
+				youtubeVideoPlayer.videoId = fe.target.selectedItem.id;
+				
+				geoTagMap.clean();
+				youtubeVideoPlayer.clearGeoTagTimes();
+				
+				var dbHandler:DBHandler = new DBHandler('geotag.db');
+				
+				var query:String = "SELECT * FROM GeoTag WHERE VideoId = '" + youtubeVideoPlayer.videoId + "' ORDER BY StartTime ASC";
+				var results:Array = dbHandler.executeQuery(query).data;
+				
+				for each(var result:Object in results)
+				{
+					result.name = unescape(result.name);
+					result.fcl = unescape(result.fcl);
+					result.countryName = unescape(result.countryName);
+					result.title = unescape(result.title);
+					result.summary = unescape(result.summary);
+					result.wikipediaUrl = unescape(result.wikipediaUrl);
+					result.VideoId = unescape(result.VideoId);
+					
+					youtubeVideoPlayer.addGeoTagTime(result.StartTime, result.EndTime, result.Id);
+					
+					geoTagMap.addMarker(result);
+				}
+				mapBar.selectedIndex = 0;
+				
+				if(savedVideoGrid.dataProvider)
+				{
+					var i:int = 0;
+					if(getQualifiedClassName(fe.target) == "components::SavedVideoGrid")
+					{
+						for(i=0;i<youtubeVideoGrid.dataProvider.length;i++)
+						{
+							if(youtubeVideoGrid.dataProvider.toArray()[i].id == fe.target.selectedItem.id)
+							{
+								youtubeVideoGrid.removeEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+								youtubeVideoGrid.selectedIndex = i;
+								youtubeVideoGrid.addEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+								return;
+							}
+						}
+						youtubeVideoGrid.removeEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+						youtubeVideoGrid.selectedItem = null;
+						youtubeVideoGrid.addEventListener(FlexEvent.VALUE_COMMIT, valueCommitHandler);
+					}
+					else if(getQualifiedClassName(fe.target) == "components::YoutubeVideoGrid")
+					{
+						for(i=0;i<savedVideoGrid.dataProvider.length;i++)
+						{
+							if(savedVideoGrid.dataProvider.toArray()[i].id == fe.target.selectedItem.id)
+							{
+								savedVideoGrid.selectedIndex = i;
+								return;
+							}
+						}
+						savedVideoGrid.selectedItem = null;
+					}
+				}
+			}
+			
+			private function videosNotFoundHandler(yse:YoutubeSearchEvent):void
+			{
+				if(firstSearch)
+					addEventListener(YoutubeSearchEvent.SEARCH_BEGINNING, searchBeginningHandler);
+				
+				Alert.show("No videos found!");
+			}
+		]]>
+	</fx:Script>
+</s:WindowedApplication>
